@@ -38,6 +38,7 @@ function App() {
   const [playerState, setPlayerState] = useState("Loading");
   const [duration, setDuration] = useState(0);
   const [position, setPosition] = useState(0);
+  const [pendingUnlock, setPendingUnlock] = useState(null);
   const [roomState, setRoomState] = useState(emptyRoomState);
 
   const socketRef = useRef(null);
@@ -87,6 +88,9 @@ function App() {
         onError: () => showNotice("This video cannot be embedded or played here. Try another YouTube link.", "error"),
         onStateChange: (event) => {
           setPlayerState(playerStates[event.data] || "Idle");
+          if (event.data === YT.PlayerState.PLAYING) {
+            setPendingUnlock(null);
+          }
           if (suppressPlayerEventsRef.current || !socketRef.current || !roomCode) return;
 
           const current = getCurrentTime();
@@ -193,8 +197,7 @@ function App() {
     }
 
     if (message.type === "control") {
-      if (message.actionId === lastActionRef.current && message.by === clientId) return;
-      applyRemoteState(message.state, false);
+      applyRemoteState(message.state, false, message.by === clientId);
     }
   }
 
@@ -277,7 +280,7 @@ function App() {
     socket.send(JSON.stringify({ type: "control", actionId, payload: { action, ...payload } }));
   }
 
-  function applyRemoteState(state, immediate) {
+  function applyRemoteState(state, immediate, fromLocal = false) {
     setRoomState(state);
     if (state.videoUrl) setVideoUrl(state.videoUrl);
 
@@ -291,7 +294,11 @@ function App() {
     const previousVideoId = roomStateRef.current.videoId;
 
     if (state.videoId && previousVideoId !== state.videoId) {
-      player.loadVideoById(state.videoId, targetPosition);
+      if (state.status === "playing") {
+        player.loadVideoById(state.videoId, targetPosition);
+      } else {
+        player.cueVideoById(state.videoId, targetPosition);
+      }
       if (state.status === "paused") {
         window.setTimeout(() => player.pauseVideo(), 150);
       }
@@ -299,8 +306,28 @@ function App() {
       const current = player.getCurrentTime?.() || 0;
       const drift = Math.abs(current - targetPosition);
       if (immediate || drift > 0.55) player.seekTo(targetPosition, true);
-      if (state.status === "playing" && player.getPlayerState?.() !== YT.PlayerState.PLAYING) player.playVideo();
+      if (state.status === "playing" && player.getPlayerState?.() !== YT.PlayerState.PLAYING) {
+        player.playVideo();
+      }
       if (state.status === "paused" && player.getPlayerState?.() !== YT.PlayerState.PAUSED) player.pauseVideo();
+    }
+
+    if (state.status === "playing") {
+      window.setTimeout(() => {
+        const playerStateCode = player.getPlayerState?.();
+        if (playerStateCode !== YT.PlayerState.PLAYING && roomStateRef.current.status === "playing") {
+          setPendingUnlock({
+            videoId: state.videoId,
+            position: targetPosition,
+            fromLocal
+          });
+          if (!fromLocal) {
+            showNotice("Your device needs one tap to start synced playback.", "neutral");
+          }
+        }
+      }, fromLocal ? 350 : 900);
+    } else {
+      setPendingUnlock(null);
     }
 
     window.setTimeout(() => {
@@ -319,8 +346,10 @@ function App() {
     const current = getCurrentTime();
     const state = player?.getPlayerState?.();
     if (state === YT.PlayerState.PLAYING) {
+      applyLocalPause(current);
       sendControl("pause", { position: current });
     } else {
+      applyLocalPlay(current);
       sendControl("play", { position: current });
     }
   }
@@ -328,13 +357,79 @@ function App() {
   function seekBy(seconds) {
     const next = Math.max(0, getCurrentTime() + seconds);
     const isPlaying = playerRef.current?.getPlayerState?.() === YT.PlayerState.PLAYING;
+    applyLocalSeek(next, isPlaying);
     sendControl("seek", { position: next, status: isPlaying ? "playing" : "paused" });
   }
 
   function scrub(event) {
     const next = Number(event.target.value);
     const isPlaying = playerRef.current?.getPlayerState?.() === YT.PlayerState.PLAYING;
+    applyLocalSeek(next, isPlaying);
     sendControl("seek", { position: next, status: isPlaying ? "playing" : "paused" });
+  }
+
+  function applyLocalPlay(targetPosition) {
+    const player = playerRef.current;
+    if (!player || !hasVideo) return;
+    suppressPlayerEventsRef.current = true;
+    player.seekTo(targetPosition, true);
+    player.playVideo();
+    setPendingUnlock(null);
+    setPlayerState("Playing");
+    window.setTimeout(() => {
+      suppressPlayerEventsRef.current = false;
+    }, 500);
+  }
+
+  function applyLocalPause(targetPosition) {
+    const player = playerRef.current;
+    if (!player || !hasVideo) return;
+    suppressPlayerEventsRef.current = true;
+    player.seekTo(targetPosition, true);
+    player.pauseVideo();
+    setPendingUnlock(null);
+    setPlayerState("Paused");
+    window.setTimeout(() => {
+      suppressPlayerEventsRef.current = false;
+    }, 500);
+  }
+
+  function applyLocalSeek(targetPosition, shouldKeepPlaying) {
+    const player = playerRef.current;
+    if (!player || !hasVideo) return;
+    suppressPlayerEventsRef.current = true;
+    player.seekTo(targetPosition, true);
+    if (shouldKeepPlaying) {
+      player.playVideo();
+    }
+    setPosition(targetPosition);
+    window.setTimeout(() => {
+      suppressPlayerEventsRef.current = false;
+    }, 500);
+  }
+
+  function unlockSyncedPlayback() {
+    const state = roomStateRef.current;
+    if (!state.videoId) return;
+    const targetPosition =
+      state.status === "playing" ? state.position + (Date.now() - state.updatedAt) / 1000 : state.position;
+
+    suppressPlayerEventsRef.current = true;
+    const player = playerRef.current;
+    if (player) {
+      if (player.getVideoData?.().video_id !== state.videoId) {
+        player.loadVideoById(state.videoId, targetPosition);
+      } else {
+        player.seekTo(targetPosition, true);
+      }
+      player.playVideo();
+    }
+    setPendingUnlock(null);
+    setPlayerState("Playing");
+    sendControl("play", { position: targetPosition });
+    window.setTimeout(() => {
+      suppressPlayerEventsRef.current = false;
+    }, 500);
   }
 
   async function copy(text, label) {
@@ -376,6 +471,16 @@ function App() {
               h("div", { className: "play-badge" }, "SYNC"),
               h("h1", null, "Watch in the same moment."),
               h("p", null, "Create a room, invite a friend, and load a YouTube video.")
+            ),
+          pendingUnlock &&
+            h(
+              "div",
+              { className: "play-unlock" },
+              h("div", null,
+                h("strong", null, "Tap to start synced playback"),
+                h("span", null, "Mobile browsers need one tap before video can play.")
+              ),
+              h("button", { className: "primary-button", onClick: unlockSyncedPlayback }, "Start synced video")
             )
         ),
         h(

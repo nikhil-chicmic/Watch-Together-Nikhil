@@ -10,6 +10,7 @@ A free watch-party website built with React, CSS, browser WebSockets, Node.js, a
 - Either viewer can play, pause, or seek.
 - The server broadcasts playback state to every viewer in the room.
 - Timestamp-based drift correction keeps players closely aligned.
+- Mobile-safe playback controls apply locally first, then sync to the room.
 - No paid database, auth provider, media server, or backend platform is required.
 
 ## Local Run
@@ -122,6 +123,8 @@ The server is the source of truth. When a viewer sends play, pause, seek, or loa
 ## Production Notes
 
 No normal web app can promise literal 0% error probability or true zero-delay playback over the public internet. Network latency, browser scheduling, YouTube buffering, blocked embeds, and device speed can all vary. This app is built with practical safeguards: validation, health checks, timestamp correction, copy/error handling, room cleanup, and smoke tests.
+
+Mobile browsers can block remote autoplay with sound until the user taps the page. WatchTogether handles this by showing a `Start synced video` button on that device when needed. After that tap, laptop-to-mobile, mobile-to-laptop, and mobile-to-mobile controls stay synced.
 
 For a public product, the next production upgrades are:
 
