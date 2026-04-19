@@ -39,6 +39,12 @@ npm run smoke
 
 This project is ready for Node-compatible free hosting.
 
+### Do Not Use Vercel For The Full App
+
+Vercel is excellent for static sites and serverless HTTP APIs, but this project needs a persistent WebSocket server for live room sync. Vercel Serverless Functions do not support acting as a long-running WebSocket server, so rooms may create locally but deployed sync will close on `vercel.app`.
+
+Use Render, Railway, Fly.io, or another host that runs a normal Node server process.
+
 ### Recommended Free Deployment: Render
 
 1. Create a free GitHub account if you do not already have one.

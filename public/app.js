@@ -18,6 +18,10 @@ const emptyRoomState = {
   updatedAt: Date.now()
 };
 
+function isVercelHost() {
+  return window.location.hostname.endsWith(".vercel.app");
+}
+
 function App() {
   const urlRoom = (new URLSearchParams(window.location.search).get("room") || "").toUpperCase();
   const [roomCode, setRoomCode] = useState("");
@@ -112,13 +116,23 @@ function App() {
       setConnecting(false);
       setConnected(false);
       if (socketRef.current === socket) {
-        showNotice("Sync connection closed. Refresh or rejoin if controls stop updating.", "error");
+        showNotice(
+          isVercelHost()
+            ? "Vercel cannot host this WebSocket sync server. Deploy this project on Render, Railway, Fly.io, or another Node server host."
+            : "Sync connection closed. Refresh or rejoin if controls stop updating.",
+          "error"
+        );
       }
     });
 
     socket.addEventListener("error", () => {
       setConnecting(false);
-      showNotice("Could not open the sync channel for this room.", "error");
+      showNotice(
+        isVercelHost()
+          ? "Vercel deployments do not support the persistent WebSocket server required for room sync."
+          : "Could not open the sync channel for this room.",
+        "error"
+      );
     });
 
     socket.addEventListener("message", (event) => {
